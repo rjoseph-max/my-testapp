@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CICD Pipeline config for <PROJECT_NAME_HERE>"
+Parameters:
+  CFNStackName:
+    Description: Go lambda deployment pipeline stack
+    Type: String
+    Default: template-go
+  Hotfix:
+    Description: Deploy to production only
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+  GitHubRepo:
+    Type: String
+    Default: template-go
+    AllowedPattern: "[A-Za-z0-9-]+"
+  GitHubBranch:
+    Type: String
+    Default: main
+    AllowedPattern: "[A-Za-z0-9-/]+"
+  PersonalDevelopmentEnvironment:
+    Description: If stack will be deployed to personal AWS environment
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+Resources:
+  DeploymentPipeline:
+    Type: MAXEX::OperationalExcellence::PipelineAccountCICD::MODULE
+    Properties:
+      CFNStackName: !Ref CFNStackName
+      GitHubRepo: !Ref GitHubRepo
+      GitHubBranch: !Ref GitHubBranch
+      Hotfix: !Ref Hotfix
+      PersonalDevelopmentEnvironment: !Ref PersonalDevelopmentEnvironment
+      CoreCodeBuildTests: false
+      BuildspecFilename: buildspec.yml
+      RetainedResources: false
+      CodeBuildImage: "aws/codebuild/standard:5.0"
+      CodepipelineSNSTopicArn: !ImportValue CodepipelineSNSTopicArn
+      CodeStarConnectionArn: !ImportValue CodeStarConnectionArn

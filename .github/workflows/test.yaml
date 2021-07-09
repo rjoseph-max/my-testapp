@@ -1,0 +1,40 @@
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+name: Go tests
+jobs:
+  checks:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: '1.14'
+    - name: setup env
+      run: |
+        echo "GOPATH=$(dirname $GITHUB_WORKSPACE)" >> $GITHUB_ENV
+        echo "$(dirname $GITHUB_WORKSPACE)/bin" >> $GITHUB_PATH
+      shell: bash
+    - uses: actions/checkout@v1
+      with:
+        path: src/github.com/${{ github.repository }}
+    - uses: webfactory/ssh-agent@v0.5.0
+      with:
+        ssh-private-key: |
+          ${{ secrets.LIB_GO_KEY }}
+    - name: Install golint and setup Go
+      run: |
+         git config --global url."git@github.com:".insteadOf "https://github.com/"
+         go env -w GOPRIVATE="github.com/maxexllc/*"
+         go get -u golang.org/x/lint/golint
+    - name: Lint
+      run: golint
+    - name: Get Dependencies
+      run: go get -t ./...
+    - name: Vet
+      run: go vet ./...
+    - name: Test
+      run: go test ./... -race -coverprofile=coverage.xml -covermode=atomic

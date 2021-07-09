@@ -1,0 +1,173 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Template Go
+Parameters:
+  Env:
+    Description: 'The env level to which this stack is being deployed (i.e. Dev/QA/Prod)'
+    Type: 'String'
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - SharedDev
+      - QA
+      - Prod
+  CFNStackName:
+    Description: Your project's CF Stack Name
+    Type: String
+    Default: template-go
+  Hotfix:
+    Description: Skip dev/qa and release to prod. We pass this from the ci-cd-pipeline
+    Type: String
+    Default: false
+  PrivateSubnets:
+    Description: 'Private subnets in VPC'
+    Type: AWS::SSM::Parameter::Value<List<String>>
+    Default: maxex-network-privatesubnets
+    AllowedValues:
+      - maxex-network-privatesubnets
+  EndpointSGParameter:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: 'MAXEX network VPC endpoint security group'
+    Default: maxex-network-vpce-sg
+    AllowedValues:
+      - maxex-network-vpce-sg
+  ApigwVpcEndpointId:
+    Description: 'API Gateway VPC Enpoint ID'
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: maxex-network-apigwvpce-id
+  DeployCanaries:
+    Description: If canary scripts should be deployed
+    Type: String
+    AllowedValues:
+      - true
+      - false
+    Default: false
+Conditions:
+  isHigherEnv: !Not [!Equals ["Dev", !Ref Env]]
+  isQAorProd: !Or [ !Equals [ !Ref Env, QA ], !Equals [ !Ref Env, Prod ] ]
+  isHotfix: !Equals [ !Ref Hotfix, true ]
+Mappings:
+  EnvMap:
+    Dev:
+      APIThrottleRate: 10
+      APIThrottleBurst: 5
+      DeploymentType: AllAtOnce
+      vpceid: NoValueEver
+    SharedDev:
+      APIThrottleRate: 10
+      APIThrottleBurst: 5
+      DeploymentType: AllAtOnce
+      vpceid: vpce-0dee52fdf563937b0
+    QA:
+      APIThrottleRate: 100
+      APIThrottleBurst: 50
+      DeploymentType: Linear10PercentEvery3Minutes
+      vpceid: vpce-0dee52fdf563937b0
+    Prod:
+      APIThrottleRate: 10000
+      APIThrottleBurst: 5000
+      DeploymentType: Linear10PercentEvery10Minutes
+      vpceid: vpce-0dda926bf3f6f021a
+Resources:
+  LambdaAuthorizer:
+    Type: MAXEX::Authentication::GoLambdaAuthorizer::MODULE
+    Properties:
+      Env: !Ref Env
+  RestApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Env
+      TracingEnabled: true
+      EndpointConfiguration:
+        Type: PRIVATE
+        VPCEndpointIds:
+          - !Ref ApigwVpcEndpointId
+          - !If [ isHigherEnv, !FindInMap [EnvMap, !Ref Env, vpceid], !Ref 'AWS::NoValue' ]
+      MethodSettings:
+        - ThrottlingBurstLimit: !FindInMap [EnvMap, !Ref Env, APIThrottleBurst]
+          ThrottlingRateLimit: !FindInMap [EnvMap, !Ref Env, APIThrottleRate]
+          ResourcePath: '/*'
+          HttpMethod: '*'
+          MetricsEnabled: !If [ isQAorProd, true, false ]
+          LoggingLevel: !If [ isQAorProd, ERROR, "OFF" ]
+      Auth:
+        ResourcePolicy:
+          CustomStatements: [{
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "execute-api:Invoke",
+            "Resource": "execute-api:/*"
+          },
+            {
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "execute-api:Invoke",
+              "Resource": "execute-api:/*",
+              "Condition" : {
+                "ForAnyValue:StringNotEquals": {
+                  "aws:SourceVpce": [
+                    {"Ref" : "ApigwVpcEndpointId"},
+                    !If [ isHigherEnv, !FindInMap [EnvMap, !Ref Env, vpceid], !Ref 'AWS::NoValue' ]
+                  ]
+                }
+              }
+            }]
+        DefaultAuthorizer: LambdaAuthorizer
+        Authorizers:
+          LambdaAuthorizer:
+            FunctionArn: !GetAtt LambdaAuthorizer.APIGatewayLambdaAuthorizer.Arn
+            Identity:
+              Header: Authorization
+              ValidationExpression: Bearer .*
+              ReauthorizeEvery: 3600
+  TestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: go1.x
+      Description: Lambda function that handles rate sheet upload for buyers
+      CodeUri: functions/test/
+      Handler: main
+      AutoPublishAlias: live
+      Tracing: Active
+      Timeout: 15
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref EndpointSGParameter
+        SubnetIds: !Ref PrivateSubnets
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        PostEvent:
+          Type: Api
+          Properties:
+            Path: /test/{TestID}
+            Method: POST
+            RestApiId:
+              Ref: RestApiGateway
+      DeploymentPreference:
+        Type: !If [ isHotfix, AllAtOnce, !FindInMap [ EnvMap, !Ref Env, DeploymentType ] ]
+        Alarms:
+          - Ref: TestFunctionErrorAlarm
+  TestFunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: false
+      AlarmDescription: !Sub 'Lambda Error Alarm for ${TestFunction}'
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 1
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub '${TestFunction}'
+      Period: 300
+      Statistic: Sum
+
+  ServiceURLParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${AWS::StackName}-vpce-url
+      Type: String
+      Value: !Sub https://${RestApiGateway}-${ApigwVpcEndpointId}.execute-api.${AWS::Region}.amazonaws.com/${Env}
+      Description: URL to connect with this service via VPC endpoint

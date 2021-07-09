@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "<PROJECT_NAME_HERE> CloudFormation role. This roles is assumed by CodePipeline role in Pipeline account"
+Parameters:
+  Env:
+    Description: 'The env level to which this stack is being deployed (i.e. Dev/SharedDev/QA/Prod)'
+    Type: 'String'
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - SharedDev
+      - QA
+      - Prod
+  BuildArtifactBucket:
+    Description: Build artifact bucket. CodePipeline fills this automatically in
+      personal AWS environments.
+    Type: String
+    Default: arn:aws:s3:::template-go-infra-artifactbucket
+  S3ArtifactBucketKMSKeyIDArn:
+    Description: KMS key used for default encryption of build artifact bucket in
+      production environment
+    Type: String
+    Default: "arn:aws:kms:us-east-1:652560834457:key/ef1e4b40-6323-433b-aac4-8e4e37bf6617"
+  CFNStackName:
+    Description: Stack name
+    Type: String
+    Default: template-go
+  PipelineAccount:
+    Description: Pipeline account which triggers <PROJECT_NAME_HERE> deployments
+    Type: String
+    Default: 652560834457
+Mappings:
+  EnvMap:
+    Dev:
+      OktaSecretArn: "arn:aws:secretsmanager:us-east-1:515177040146:secret:okta-fqpHVV"
+    SharedDev:
+      OktaSecretArn: "arn:aws:secretsmanager:us-east-1:515177040146:secret:okta-fqpHVV"
+    QA:
+      OktaSecretArn: "arn:aws:secretsmanager:us-east-1:147396692989:secret:okta-qpPFZN"
+    Prod:
+      OktaSecretArn: "arn:aws:secretsmanager:us-east-1:999630474676:secret:okta-IHBPvx"
+Resources:
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${CFNStackName}-cloudformation-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+                - codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Sid: ''
+            Principal:
+              AWS: '*'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn':
+                  - !Sub arn:aws:iam::${PipelineAccount}:role/*-DeploymentPipeline*
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudFormationRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - apigateway:POST
+                  - apigateway:UpdateRestApiPolicy
+                Resource:
+                  - "arn:aws:apigateway:us-east-1::/restapis"
+              - Effect: Allow
+                Action:
+                  - apigateway:PATCH
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:GET
+                  - apigateway:DELETE
+                  - apigateway:UpdateRestApiPolicy
+                Resource:
+                  - "arn:aws:apigateway:us-east-1::/restapis/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - "arn:aws:s3:::go-lambda-authorizer-*"
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeInternetGateways
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeNetworkInterfaces
+                Resource:
+                  - "*"
+              - Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:DeleteFunction
+                  - lambda:AddPermission
+                  - lambda:UpdateFunctionCode
+                  - lambda:ListTags
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListVersionsByFunction
+                  - lambda:PublishVersion
+                  - lambda:CreateAlias
+                  - lambda:DeleteAlias
+                  - lambda:RemovePermission
+                  - lambda:GetAlias
+                  - lambda:UpdateAlias
+                  - lambda:UpdateFunctionConfiguration
+                Resource: !Sub "arn:aws:lambda:*:${AWS::AccountId}:function:${CFNStackName}-*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:ReEncrypt*
+                  - kms:Encrypt
+                Resource: !Ref S3ArtifactBucketKMSKeyIDArn  
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateApplication
+                  - codedeploy:DeleteApplication
+                  - codedeploy:RegisterApplicationRevision
+                Resource: !Sub "arn:aws:codedeploy:*:${AWS::AccountId}:application:${CFNStackName}-*"
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeploymentGroup
+                  - codedeploy:DeleteDeploymentGroup
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentGroup
+                  - codedeploy:UpdateDeploymentGroup
+                  - codedeploy:StopDeployment
+                Resource: !Sub "arn:aws:codedeploy:*:${AWS::AccountId}:deploymentgroup:${CFNStackName}-*"
+              - Effect: Allow
+                Action:
+                  - codedeploy:GetDeploymentConfig
+                Resource: !Sub "arn:aws:codedeploy:*:${AWS::AccountId}:deploymentconfig:*"
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetObjectAcl
+                  - s3:PutObjectAcl
+                  - s3:PutBucketTagging
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketLocation
+                Resource: !Sub "arn:aws:s3:::${CFNStackName}*"
+              - Effect: Allow
+                Action:
+                  - iam:ListPolicyVersions
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:DeletePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:DeletePolicyVersion
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:UpdateAssumeRolePolicy
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:policy/*"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${CFNStackName}*"
+              - Effect: Allow
+                Action:
+                  - SNS:GetTopicAttributes
+                  - SNS:CreateTopic
+                  - SNS:DeleteTopic
+                  - SNS:Subscribe
+                  - SNS:Unsubscribe
+                  - SNS:TagResource
+                  - SNS:SetTopicAttributes
+                  - SNS:ListSubscriptionsByTopic
+                Resource:
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${CFNStackName}*
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                Resource:
+                  - !Sub "arn:aws:cloudformation:us-east-1:*:stack/${CFNStackName}*"
+                  - arn:aws:cloudformation:us-east-1:aws:transform/Serverless-2016-10-31
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutMetricFilter
+                  - logs:DeleteMetricFilter
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutMetricFilter
+                  - logs:DeleteMetricFilter
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group::log-stream:*
+              - Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:Put*
+                Resource: !Sub "${BuildArtifactBucket}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Ref BuildArtifactBucket
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                Resource: !Sub "arn:aws:cloudwatch:*:${AWS::AccountId}:alarm:${CFNStackName}-*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource:
+                  - "arn:aws:kms:us-east-1:515177040146:key/24fa1a06-0c1d-440a-acfb-9ffcfefc2098" # GitHub token secret KMS key
+                  - "arn:aws:kms:us-east-1:515177040146:key/f5220220-8012-4be3-9bc9-64e942027f58" # M2M dev secrets KMS key
+              - Effect: Allow
+                Action:
+                  - iam:ListRoleTags
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - arn:aws:iam::*:role/*
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub arn:aws:ssm:us-east-1:${AWS::AccountId}:parameter/maxex-network-privatesubnets
+                  - !Sub arn:aws:ssm:us-east-1:${AWS::AccountId}:parameter/maxex-network-vpce-sg
+                  - !Sub arn:aws:ssm:us-east-1:${AWS::AccountId}:parameter/maxex-network-apigwvpce-id
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:GetParameters
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
+                  - ssm:DeleteParameter
+                Resource:
+                  - !Sub "arn:aws:ssm:us-east-1:${AWS::AccountId}:parameter/${CFNStackName}-*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - "arn:aws:secretsmanager:us-east-1:515177040146:secret:githubsvcaccesstkn-ioewJC"
+                  - !FindInMap [ EnvMap, !Ref Env, OktaSecretArn ]
+Outputs:
+  CloudFormationRoleArn:
+    Description: The ARN of the CloudFormation Role
+    Value: !GetAtt CloudFormationRole.Arn
+    Export:
+      Name: template-go-cloudformation-role-arn
